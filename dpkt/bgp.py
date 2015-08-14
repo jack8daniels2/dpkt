@@ -38,6 +38,8 @@ ORIGINATOR_ID = 9
 CLUSTER_LIST = 10
 MP_REACH_NLRI = 14
 MP_UNREACH_NLRI = 15
+AS4_PATH = 17
+AS4_AGGREGATOR = 18
 
 # Origin Types
 ORIGIN_IGP = 0
@@ -362,6 +364,8 @@ class BGP(dpkt.Packet):
                     self.data = self.mp_reach_nlri = self.MPReachNLRI(self.data)
                 elif self.type == MP_UNREACH_NLRI:
                     self.data = self.mp_unreach_nlri = self.MPUnreachNLRI(self.data)
+                elif self.type == AS4_PATH:
+                    self.data = self.as_path = self.AS4Path(self.data)
 
             def __len__(self):
                 if self.extended_length:
@@ -411,19 +415,76 @@ class BGP(dpkt.Packet):
                     def unpack(self, buf):
                         dpkt.Packet.unpack(self, buf)
                         l = []
+                        # Hack! Length of the buffer is not an indicative
+                        # of AS length. But, this hack helps parse
+                        # more packets than it does otherwise, albeit some incorrectly.
+                        self.as_len = 4
+                        if self.len * self.as_len > len(self.data):
+                            self.as_len = 2
                         for i in range(self.len):
-                            AS = struct.unpack('>H', self.data[:2])[0]
-                            self.data = self.data[2:]
+                            if self.as_len == 4:
+                                AS = struct.unpack('>I', self.data[:4])[0]
+                                self.data = self.data[4:]
+                            else:
+                                AS = struct.unpack('>H', self.data[:2])[0]
+                                self.data = self.data[2:]
                             l.append(AS)
                         self.data = self.path = l
 
                     def __len__(self):
-                        return self.__hdr_len__ + 2 * len(self.path)
+                        return self.__hdr_len__ + self.as_len * len(self.path)
 
                     def __str__(self):
                         as_str = ''
                         for AS in self.path:
-                            as_str += struct.pack('>H', AS)
+                            if self.as_len == 4:
+                                as_str += struct.pack('>I', AS)
+                            else:
+                                as_str += struct.pack('>H', AS)
+                        return self.pack_hdr() + as_str
+
+            class AS4Path(dpkt.Packet):
+                __hdr_defaults__ = {
+                    'segments': []
+                }
+
+                def unpack(self, buf):
+                    self.data = buf
+                    l = []
+                    while self.data:
+                        seg = self.AS4PathSegment(self.data)
+                        self.data = self.data[len(seg):]
+                        l.append(seg)
+                    self.data = self.segments = l
+
+                def __len__(self):
+                    return sum(map(len, self.data))
+
+                def __str__(self):
+                    return ''.join(map(str, self.data))
+
+                class AS4PathSegment(dpkt.Packet):
+                    __hdr__ = (
+                        ('type', 'B', 0),
+                        ('len', 'B', 0)
+                    )
+
+                    def unpack(self, buf):
+                        dpkt.Packet.unpack(self, buf)
+                        l = []
+                        for i in range(self.len):
+                            AS = struct.unpack('>I', self.data[:4])[0]
+                            self.data = self.data[4:]
+                            l.append(AS)
+                        self.data = self.path = l
+
+                    def __len__(self):
+                        return self.__hdr_len__ + 4 * len(self.path)
+
+                    def __str__(self):
+                        as_str = ''
+                        for AS in self.path:
+                            as_str += struct.pack('>I', AS)
                         return self.pack_hdr() + as_str
 
             class NextHop(dpkt.Packet):
